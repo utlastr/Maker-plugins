@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Maker 画布工作流",
-  "version": "4.5.0",
+  "version": "4.5.1",
   "description": "独立节点、独立状态与连接，沿用 Maker 官方样式和生图服务。",
   "permissions": [
     "storage",

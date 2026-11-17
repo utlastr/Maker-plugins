@@ -5,12 +5,17 @@ $source = [IO.Path]::GetFullPath($PSScriptRoot)
 if ([IO.Path]::GetFullPath($target) -ne $source) {
   New-Item -ItemType Directory -Path $target -Force | Out-Null
   foreach ($item in Get-ChildItem -LiteralPath $source -Force) {
-    if ($item.Name -notin @("stage", "backup", "update.log", "pending.json")) {
-      if ($item.Name -eq "NativeHost.exe" -and (Test-Path -LiteralPath (Join-Path $target $item.Name)) -and
-          (Get-FileHash -LiteralPath $item.FullName).Hash -eq (Get-FileHash -LiteralPath (Join-Path $target $item.Name)).Hash) { continue }
+    if ($item.Name -notin @("stage", "backup", "update.log", "pending.json", "NativeHost.exe")) {
       Copy-Item -LiteralPath $item.FullName -Destination $target -Recurse -Force
     }
   }
+}
+$installedVersion = (Get-Content -LiteralPath (Join-Path $target "extension/manifest.json") -Raw | ConvertFrom-Json).version
+$launcher = Join-Path $target ("NativeHost-" + $installedVersion + ".exe")
+$launcherSource = Join-Path $source "NativeHost.exe"
+if (!(Test-Path -LiteralPath $launcher) -or
+    (Get-FileHash -LiteralPath $launcherSource).Hash -ne (Get-FileHash -LiteralPath $launcher).Hash) {
+  Copy-Item -LiteralPath $launcherSource -Destination $launcher -Force
 }
 $configPath = Join-Path $target "update-config.json"
 $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
@@ -50,7 +55,7 @@ if ($DevelopmentExtensionId -match '^[a-p]{32}$') { $origins += "chrome-extensio
 $hostManifest = @{
   name = "cn.maker.workflow.updater"
   description = "Maker Workflow signed internal updater"
-  path = Join-Path $target "NativeHost.exe"
+  path = $launcher
   type = "stdio"
   allowed_origins = $origins
 } | ConvertTo-Json

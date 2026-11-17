@@ -4,7 +4,8 @@ const cp = require("node:child_process");
 const root = path.join(process.env.LOCALAPPDATA, "MakerWorkflow");
 const request = Buffer.from(JSON.stringify({ action: "status" }));
 const header = Buffer.alloc(4); header.writeUInt32LE(request.length);
-const result = cp.spawnSync(path.join(root, "NativeHost.exe"), [], {
+const hostManifest = JSON.parse(fs.readFileSync(path.join(root, "native-host.json"), "utf8"));
+const result = cp.spawnSync(hostManifest.path, [], {
   input: Buffer.concat([header, request]), windowsHide: true, timeout: 15000, maxBuffer: 2 * 1024 * 1024
 });
 if (result.error) throw result.error;

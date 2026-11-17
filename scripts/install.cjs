@@ -45,7 +45,8 @@ async function main() {
       const result = await browser.send("Extensions.loadUnpacked", { path: installedPath });
       console.log(JSON.stringify(result)); return;
     }
-    const extensionPath = path.resolve(__dirname, "../extension");
+    const extensionPath = process.argv.includes("--installed") ?
+      path.join(process.env.LOCALAPPDATA, "MakerWorkflow/extension") : path.resolve(__dirname, "../extension");
     const expectedVersion = JSON.parse(require("node:fs").readFileSync(path.join(extensionPath, "manifest.json"), "utf8")).version;
     const find = result => result.extensions.find(e => path.resolve(e.path).toLowerCase() === extensionPath.toLowerCase() &&
       (!process.env.MAKER_EXTENSION_ID || e.id === process.env.MAKER_EXTENSION_ID));

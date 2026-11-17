@@ -147,12 +147,15 @@ function Run-Update($request) {
     foreach ($name in @("Updater.ps1", "NativeHost.cmd", "WorkflowHost.cjs", "Bridge.cjs", "StartBridge.ps1", "NOTICE.md")) {
       Copy-Item -LiteralPath (Join-Path $unpacked $name) -Destination (Join-Path $root $name) -Force
     }
-    if (!(Test-Path -LiteralPath (Join-Path $root "NativeHost.exe"))) {
-      Copy-Item -LiteralPath (Join-Path $unpacked "NativeHost.exe") -Destination (Join-Path $root "NativeHost.exe")
+    $launcher = Join-Path $root ("NativeHost-" + $meta.version + ".exe")
+    if (!(Test-Path -LiteralPath $launcher) -or
+        (Get-FileHash -LiteralPath (Join-Path $unpacked "NativeHost.exe")).Hash -ne
+        (Get-FileHash -LiteralPath $launcher).Hash) {
+      Copy-Item -LiteralPath (Join-Path $unpacked "NativeHost.exe") -Destination $launcher -Force
     }
     $manifestPath = Join-Path $root "native-host.json"
     $hostManifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-    $hostManifest.path = Join-Path $root "NativeHost.exe"
+    $hostManifest.path = $launcher
     [IO.File]::WriteAllText($manifestPath, ($hostManifest | ConvertTo-Json -Depth 8), (New-Object Text.UTF8Encoding $false))
   } catch {
     foreach ($file in Get-ChildItem -LiteralPath (Join-Path $backup "extension") -File) {
