@@ -1,0 +1,17 @@
+node_modules/
+dist/
+*.pem
+*.key
+extension/bridge.json
+extension/installation.json
+distribution/bridge-config.json
+distribution/update-config.json
+distribution/native-host.json
+*.png
+server/
+web/
+shared/*
+!shared/refinement.cjs
+test/*
+!test/refinement.test.cjs
+backups/

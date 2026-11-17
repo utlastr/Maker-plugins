@@ -1,0 +1,73 @@
+{
+  "manifest_version": 3,
+  "name": "Maker 画布工作流",
+  "version": "4.5.0",
+  "description": "独立节点、独立状态与连接，沿用 Maker 官方样式和生图服务。",
+  "permissions": [
+    "storage",
+    "unlimitedStorage",
+    "scripting",
+    "nativeMessaging",
+    "alarms",
+    "clipboardRead",
+    "clipboardWrite"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "background": {
+    "service_worker": "install.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://127.0.0.1/*",
+        "http://localhost/*"
+      ],
+      "js": [
+        "maker.js"
+      ],
+      "world": "MAIN",
+      "all_frames": true,
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "http://127.0.0.1/*",
+        "http://localhost/*"
+      ],
+      "js": [
+        "ownership.js"
+      ],
+      "all_frames": true,
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "http://127.0.0.1/*",
+        "http://localhost/*"
+      ],
+      "js": [
+        "pipeline.js",
+        "graph.js",
+        "canvas.js",
+        "update-check.js"
+      ],
+      "all_frames": true,
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "canvas.css"
+      ],
+      "matches": [
+        "http://127.0.0.1/*",
+        "http://localhost/*"
+      ]
+    }
+  ],
+  "key": "MIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEAw/9cWP7j+xjEim1yeLzFJRFKHS0YqCt3zbIk7cMuJ9g+RYLGuYM4uYPoxNTSvFTnymx9nLk6nrUxzJor0dCXyRF784ExekJrbBrCCqGUr3DayWAYYlU3zwdwF6x4iNUJhXmyAqHdIec8STpFjNknWxwEvrcTfrX8gkcrH4mmTePddAnmVDRdHDy5VtpYM9E7b8tDTqeAS/SyVA+dLDz5MVfS9mXtQ8rZs6IkCzfre68i3jAunpUb9n/kwSGanh/ZDpmtdsY3r843SQ/stUqOLvt5CAzOP1KmP0q4k6rnydLXUuqT+gBMvqYRHpgGKFIsYBEc57cRxz56EgOAdDKrDrFjEVVxWZp1U+SXlg0Cr1tDsqtv3R8+XIOtsE77wkmNfSJHwxz8xlIizmDmTu/JCgSYNNONcEwzpO9Ina6AzoSjUOfGhpdyaAFbLVsWWVXzeYVnGYvldX2j6I3XYvTBW7CzaSxqmP2Qt03N4pPPTjbTfQGa2k+PbgcIEdjTZ53BAgMBAAE="
+}

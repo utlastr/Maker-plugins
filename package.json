@@ -1,0 +1,14 @@
+{
+  "name": "maker-canvas-workflow",
+  "private": true,
+  "version": "4.5.0",
+  "scripts": {
+    "install:browser": "node scripts/install.cjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "pngjs": "^7.0.0",
+    "protobufjs": "^8.8.1",
+    "ws": "^8.22.1"
+  }
+}
