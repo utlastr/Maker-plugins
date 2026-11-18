@@ -63,7 +63,54 @@
     }
     return result;
   }
+  let focusAnimation;
+  document.addEventListener("pointerdown", event => { if (event.isTrusted) focusAnimation?.(); }, true);
+  document.addEventListener("wheel", event => { if (event.isTrusted) focusAnimation?.(); }, { capture: true, passive: true });
   const actions = {
+    focus({ x, y, width, height }) {
+      if (![x, y, width, height].every(Number.isFinite)) return;
+      const board = document.getElementById("board"), world = document.getElementById("world");
+      if (!board || !world) return;
+      const area = board.getBoundingClientRect(), matrix = new DOMMatrixReadOnly(getComputedStyle(world).transform);
+      const dx = area.width / 2 - matrix.m41 - (x + width / 2) * matrix.a;
+      const dy = area.height / 2 - matrix.m42 - (y + height / 2) * matrix.a;
+      if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+      focusAnimation?.();
+      const pan = (dx, dy) => {
+      const pointerId = 2147483000, capture = board.setPointerCapture, release = board.releasePointerCapture;
+      try {
+        board.setPointerCapture = id => { if (id !== pointerId) capture.call(board, id); };
+        board.releasePointerCapture = id => { if (id !== pointerId) release.call(board, id); };
+        const send = (type, clientX, clientY) => board.dispatchEvent(new PointerEvent(type, {
+          pointerId, pointerType: "mouse", button: 1, buttons: type === "pointerup" ? 0 : 4,
+          clientX, clientY, bubbles: true
+        }));
+        send("pointerdown", area.left + area.width / 2, area.top + area.height / 2);
+        send("pointermove", area.left + area.width / 2 + dx, area.top + area.height / 2 + dy);
+        send("pointerup", area.left + area.width / 2 + dx, area.top + area.height / 2 + dy);
+      } finally { board.setPointerCapture = capture; board.releasePointerCapture = release; }
+      };
+      return new Promise(resolve => {
+        const start = performance.now(), duration = 180;
+        let frame, done = false;
+        const finish = () => {
+          if (done) return;
+          done = true; cancelAnimationFrame(frame);
+          world.dataset.mwFocusMoving = "false";
+          if (focusAnimation === finish) focusAnimation = undefined;
+          resolve();
+        };
+        focusAnimation = finish; world.dataset.mwFocusMoving = "true";
+        const animate = now => {
+          if (done) return;
+          const progress = Math.min(1, (now - start) / duration), eased = 1 - (1 - progress) ** 3;
+          const current = new DOMMatrixReadOnly(getComputedStyle(world).transform);
+          pan(matrix.m41 + dx * eased - current.m41, matrix.m42 + dy * eased - current.m42);
+          if (progress === 1) finish(); else frame = requestAnimationFrame(animate);
+        };
+        frame = requestAnimationFrame(animate);
+      });
+    },
     snapshot: ({ canvas }) => store().load(canvas),
     async reconcile({ canvas, attempts }) {
       for (const id of attempts) owned.add(id);
@@ -187,6 +234,32 @@
       }
       return output;
     },
+    async "element-crop"({ canvas, image, elements }) {
+      if (typeof prepareImageAtlas !== "function" || typeof encodeImageAtlasRegions !== "function")
+        throw new Error("当前 Maker 未提供官方切图算法。");
+      if (!Array.isArray(elements) || !elements.length) throw new Error("没有识别到可裁切元件。");
+      const response = await originalFetch(store().mediaUrl(image.path));
+      if (!response.ok) throw new Error("原图读取失败。");
+      const blob = await response.blob(), output = [];
+      for (let offset = 0; offset < elements.length; offset++) {
+        const group = [elements[offset]];
+        const regions = group.map(item => ({ name: "item_001", x: item.bbox[0], y: item.bbox[1],
+          width: item.bbox[2], height: item.bbox[3] }));
+        const grid = { columns: group.length, rows: 1, marginX: 0, marginY: 0, gapX: 0, gapY: 0 };
+        const prepared = await prepareImageAtlas(blob, grid, undefined, "all",
+          { mode: "grid", regions, manualNative: true, allowEmpty: true });
+        const encoded = await encodeImageAtlasRegions(prepared), items = Array.isArray(encoded) ? encoded : encoded.items;
+        for (const [index, item] of items.entries()) {
+          const element = group[index];
+          const saved = await store().importImage(canvas, await item.blob.arrayBuffer(), "image/png");
+          output.push({ path: saved.relativePath, name: element.name, width: item.width, height: item.height,
+            state: "succeeded", contentRect: item.contentRect,
+            workflow: { sourcePath: image.path, elementId: element.id, bbox: element.bbox, parent: element.parent,
+              duplicateOf: element.duplicateOf, method: "bbox-original-crop" } });
+        }
+      }
+      return output;
+    },
     "pipeline-editor"({ file }) {
       if (!file || typeof store().uiEditorUrl !== "function") throw new Error("尚未生成 UI 文件。");
       return { url: store().uiEditorUrl(file) };
@@ -288,14 +361,21 @@
       }
       const defaults = typeof CANVAS_BACKGROUND_DEFAULTS === "undefined" ?
         { tolerance: 32, softness: 24, despill: .5, mode: "connected" } : CANVAS_BACKGROUND_DEFAULTS;
-      const result = await removal.apply(blob, { ...defaults, ...(image.workflow?.plan ? { mode: "all", tolerance: 48, softness: 16, edgeDespill: true } : {}),
+      const result = await removal.apply(blob, { ...defaults, despill: 1, edgeDespill: true,
+        ...(image.workflow?.plan ? { mode: "all", tolerance: 48, softness: 16 } : {}),
         automatic: false, color: detected.color });
       const bitmap = await createImageBitmap(result.blob);
       let transparent = false, visible = false;
+      let cleanedBlob = result.blob;
       try {
         const canvas = document.createElement("canvas"); canvas.width = bitmap.width; canvas.height = bitmap.height;
         const context = canvas.getContext("2d", { willReadFrequently: true }); context.drawImage(bitmap, 0, 0);
-        const data = context.getImageData(0, 0, canvas.width, canvas.height).data;
+        const pixels = context.getImageData(0, 0, canvas.width, canvas.height), data = pixels.data;
+        if (globalThis.MakerEdgeCleanup?.clean(data, canvas.width, canvas.height, detected.color)) {
+          context.putImageData(pixels, 0, 0);
+          cleanedBlob = await new Promise((resolve, reject) => canvas.toBlob(
+            value => value ? resolve(value) : reject(new Error("透明边缘保存失败。")), "image/png"));
+        }
         for (let index = 3; index < data.length; index += 4) {
           if (data[index] < 255) transparent = true;
           if (data[index] > 0) visible = true;
@@ -303,7 +383,7 @@
         }
       } finally { bitmap.close(); }
       if (!transparent || !visible) throw new Error("去背景结果没有有效的透明前景，未输出原图。");
-      const saved = await store().importImage(canvas, await result.blob.arrayBuffer(), "image/png");
+      const saved = await store().importImage(canvas, await cleanedBlob.arrayBuffer(), "image/png");
       return { ...image, path: saved.relativePath, name: (image.name || "图片").replace(/\.[^.]+$/, "") + "-透明",
         transparent: true, sourcePath: image.path, state: "succeeded", ...await store().imageInfo(saved.relativePath) };
     },

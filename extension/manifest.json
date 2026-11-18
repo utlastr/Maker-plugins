@@ -1,9 +1,11 @@
 {
   "manifest_version": 3,
   "name": "Maker 画布工作流",
-  "version": "4.5.1",
+  "version": "4.5.4",
   "description": "独立节点、独立状态与连接，沿用 Maker 官方样式和生图服务。",
   "permissions": [
+    "tabs",
+    "tabGroups",
     "storage",
     "unlimitedStorage",
     "scripting",
@@ -19,13 +21,31 @@
   "background": {
     "service_worker": "install.js"
   },
+  "action": {
+    "default_title": "Maker 工作流更新",
+    "default_popup": "update.html"
+  },
+  "options_ui": {
+    "page": "update.html",
+    "open_in_tab": true
+  },
   "content_scripts": [
     {
       "matches": [
         "http://127.0.0.1/*",
         "http://localhost/*"
       ],
+      "js": ["project-title.js", "ui-import.js", "update-trigger.js"],
+      "all_frames": true,
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "http://127.0.0.1/*",
+        "http://localhost/*"
+      ],
       "js": [
+        "edge-cleanup.js",
         "maker.js"
       ],
       "world": "MAIN",

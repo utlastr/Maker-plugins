@@ -15,4 +15,7 @@ shared/*
 test/*
 !test/refinement.test.cjs
 !test/native-host.test.cjs
+!test/edge-cleanup.test.cjs
+!test/element-cut.test.cjs
+!test/update-flow.test.cjs
 backups/

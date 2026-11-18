@@ -4,7 +4,12 @@
   if (!/^[a-f0-9]{64}$/i.test(project || "")) return;
   const G = MakerWorkflow, P = MakerPipeline, calls = new Map();
   let serial = 0;
+  function requireExtension() {
+    try { if (chrome.runtime?.id) return; } catch {}
+    throw new Error("插件已更新，当前画布的旧连接已失效。请刷新此画布后重试；本次尚未提交生图。");
+  }
   function rpc(action, value, timeout = 30000) {
+    requireExtension();
     return new Promise((resolve, reject) => {
       const id = `v3-${chrome.runtime.id}-${++serial}`;
       const timer = setTimeout(() => { calls.delete(id); reject(new Error("官方接口未响应；未重复提交。")); }, timeout);
@@ -73,7 +78,9 @@
       if (state && id) setFeedback(state, id, text);
     }
     function reportFailure(target, id, error) {
-      const reason = error?.message || String(error || "操作未完成。");
+      const raw = error?.message || String(error || "操作未完成。");
+      const reason = /extension context invalidated/i.test(raw) ?
+        "插件已更新，当前画布的旧连接已失效。请刷新此画布后重试，不要重复点击生成。" : raw;
       const title = target?.graph.nodes[id] ? G.TYPES[target.graph.nodes[id].kind]?.title : "";
       if (target && id) setFeedback(target, id, reason);
       notice.textContent = `${title ? title + "：" : ""}${reason}`;
@@ -499,7 +506,7 @@
       const view = { element, body, header, kind: node.kind, fields: new Map(), signature: "", gallerySignature: "" };
       if (P.types[node.kind]) {
         const actions = document.createElement("div"); actions.className = "actions";
-        const process = button(node.kind === "review" ? "查看并确认素材" : "运行至此", "运行本步骤及未完成的上游步骤", () => {
+        const process = button(node.kind === "review" ? "查看并确认素材" : node.kind === "elementCut" ? "识别并裁切" : "运行至此", "运行本步骤及未完成的上游步骤", () => {
           if (node.kind === "review") void reviewPipeline(node.id); else void runPipeline(node.id);
         });
         const status = document.createElement("p"); status.className = "status";
@@ -1465,7 +1472,7 @@
         if (token.stop) return;
         if (edge.from === sourceId && target.graph.nodes[edge.to]?.kind === "cutout")
           await processCutout(target, edge.to, token);
-        else if (edge.from === sourceId && target.graph.nodes[edge.to]?.kind === "slice") {
+        else if (edge.from === sourceId && ["slice", "elementCut"].includes(target.graph.nodes[edge.to]?.kind)) {
           await executePipeline(target, edge.to, token);
           ensureDisplay(target, edge.to);
         }
@@ -1492,6 +1499,7 @@
       } finally { persist(target); if (state === target) render(); }
     }
     function run(id, target = state, retryPlanning = false) {
+      requireExtension();
       if (!target) return;
       const refineNode = G.incoming(target.graph, id).map(edge => target.graph.nodes[edge.from])
         .find(node => node.kind === "refine");
@@ -1548,6 +1556,7 @@
           plan.tasks = plan.tasks.map((task, index) => ({ ...task, prompt: record.items[index].prompt }));
           setFeedback(target, id, "");
         }
+        const namingTasks = [];
         for (let index = 0; index < plan.tasks.length && !token.stop; index++) {
           const item = record.items[index];
           token.item = item; token.request = crypto.randomUUID();
@@ -1583,7 +1592,7 @@
               if (["pending", "running"].includes(item.state)) item.state = "unknown";
               throw new Error(item.error || `第 ${record.sequence} 次生成未完成，状态：${item.state}。可在生成历史中刷新这一批的结果。`);
             }
-            await nameImage(target, item, token);
+            namingTasks.push(nameImage(target, item, token).catch(() => {}));
             if (token.stop) break;
             try { if (target.graph.runs[id] === record) await processDownstream(target, id, token); }
             catch (error) {
@@ -1600,6 +1609,7 @@
             if (sayFatal(error.message)) throw error;
           } finally { persist(target); }
         }
+        await Promise.all(namingTasks);
         record.phase = "finished";
       }, "batch-" + record.batchId, record);
     }
@@ -1638,6 +1648,31 @@
       } catch (error) { if (strict || token.stop) throw error; reportFailure(target, id, error); }
     }
     let suppressClick = false;
+    let focusClick;
+    document.addEventListener("pointerdown", event => {
+      focusClick = null;
+      if (event.button !== 0 || event.shiftKey || event.ctrlKey || event.metaKey) return;
+      const path = event.composedPath();
+      if (path.some(element => element?.matches?.("input,textarea,select,button,.port,.resize-handle"))) return;
+      const element = path.find(element => element?.matches?.(".node,.card"));
+      if (element) focusClick = { x: event.clientX, y: event.clientY,
+        id: element.dataset.node || element.dataset.id, custom: element.matches(".node") };
+    }, true);
+    document.addEventListener("pointerup", event => {
+      const clicked = focusClick; focusClick = null;
+      if (!clicked || Math.hypot(event.clientX - clicked.x, event.clientY - clicked.y) > 4) return;
+      setTimeout(() => {
+        if (gesture) return;
+        let node = clicked.custom && state?.graph.nodes[clicked.id];
+        if (!node) {
+          const element = [...nativeWorld.querySelectorAll(".card")].find(card => card.dataset.id === clicked.id);
+          if (!element?.classList.contains("selected")) return;
+          const rect = element.getBoundingClientRect(), start = point(rect.left, rect.top), scale = camera().scale;
+          node = { ...start, width: rect.width / scale, height: rect.height / scale };
+        } else if (!selected.has(clicked.id)) return;
+        void rpc("focus", { x: node.x, y: node.y, width: node.width, height: node.height }).catch(error => say(error.message));
+      }, 0);
+    }, true);
     shadow.addEventListener("pointerdown", event => {
       if (menu.contains(event.target)) return;
       menu.hidden = true;

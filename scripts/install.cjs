@@ -1,6 +1,6 @@
 const path = require("node:path");
 const WebSocket = globalThis.WebSocket || require(require.resolve("ws", {
-  paths: ["D:/Users/KLEI/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules"]
+  paths: [path.resolve(__dirname, ".."), "D:/Users/KLEI/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules"]
 }));
 
 async function connect(url) {
@@ -48,7 +48,7 @@ async function main() {
     const extensionPath = process.argv.includes("--installed") ?
       path.join(process.env.LOCALAPPDATA, "MakerWorkflow/extension") : path.resolve(__dirname, "../extension");
     const expectedVersion = JSON.parse(require("node:fs").readFileSync(path.join(extensionPath, "manifest.json"), "utf8")).version;
-    const find = result => result.extensions.find(e => path.resolve(e.path).toLowerCase() === extensionPath.toLowerCase() &&
+    const find = result => result.extensions.find(e => path.resolve(e.path).toLowerCase() === path.resolve(extensionPath).toLowerCase() &&
       (!process.env.MAKER_EXTENSION_ID || e.id === process.env.MAKER_EXTENSION_ID));
     if (process.argv[2] === "--list-maker") {
       const { extensions } = await browser.send("Extensions.getExtensions");
@@ -82,6 +82,22 @@ async function main() {
       if (!target) throw new Error("Extension worker could not start; refresh the extension in its manager.");
       const worker = await connect(target.webSocketDebuggerUrl);
       try {
+        if (process.argv[2] === "--check-update") {
+          const result = await worker.send("Runtime.evaluate", {
+            expression: "void checkUpdate();({requested:true,loadedVersion:chrome.runtime.getManifest().version})",
+            returnByValue: true
+          });
+          if (result.exceptionDetails) throw new Error("Could not trigger the extension updater.");
+          console.log(JSON.stringify(result.result.value)); return;
+        }
+        if (process.argv[2] === "--tab-diagnose") {
+          const result = await worker.send("Runtime.evaluate", {
+            expression: `(async()=>{const groups=await chrome.tabGroups.query({});const tabs=await chrome.tabs.query({});return {status:(await chrome.storage.local.get("maker-tab-organizer-status"))["maker-tab-organizer-status"],remainingGroups:groups.filter(g=>["TapTap 制造","Maker 控制台","本地游戏"].includes(g.title)),tabs:tabs.filter(t=>t.groupId===-1).map(t=>({index:t.index,windowId:t.windowId,title:t.title,url:t.url,groupId:t.groupId}))}})()`,
+            awaitPromise: true, returnByValue: true,
+          });
+          if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || "Tab organization failed.");
+          console.log(JSON.stringify(result.result?.value)); return;
+        }
         if (process.argv[2] === "--node-diagnose") {
           const id = process.argv[3];
           if (!/^[a-f0-9-]{36}$/i.test(id || "")) throw new Error("Provide a node UUID.");

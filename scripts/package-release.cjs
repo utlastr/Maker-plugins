@@ -27,7 +27,8 @@ for (const file of ["Install.cmd", "Setup.ps1", "Updater.ps1", "NativeHost.cmd",
   ...(legacy ? ["WorkflowHost.cjs", "Bridge.cjs", "StartBridge.ps1"] : [])])
   fs.copyFileSync(path.join(root, "distribution", file), path.join(staging, file));
 fs.mkdirSync(path.join(staging, "extension"), { recursive: true });
-for (const file of new Set(["manifest.json", manifest.background.service_worker,
+for (const file of new Set(["manifest.json", manifest.background.service_worker, "tab-organizer.js",
+  "update.html", "update.css", "update.js",
   ...manifest.content_scripts.flatMap(value => value.js), ...(manifest.web_accessible_resources || []).flatMap(value => value.resources)]))
   fs.copyFileSync(path.join(root, "extension", file), path.join(staging, "extension", file));
 manifest.key = extensionKey;

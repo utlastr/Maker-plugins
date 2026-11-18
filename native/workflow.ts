@@ -11,6 +11,7 @@ import { assertUiAtlasSources, prepareUiAtlasReference } from "../../../source/r
 import { assembleUiInput } from "../../../source/repos/instant-games-open-mcp/skills/maker-ui-workflow/scripts/assemble-ui-lib.mjs";
 import { generateResourceMeta } from "../../../source/repos/instant-games-open-mcp/src/maker/resourceMeta";
 import { refinementPrompt, validateRefinement } from "../shared/refinement.cjs";
+import { validateCutElements } from "../../../source/repos/instant-games-open-mcp/packages/maker-canvas/src/features/uiBbox";
 
 const digest = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 async function main(request: any) {
@@ -18,7 +19,9 @@ async function main(request: any) {
     throw new Error("Invalid Maker origin or project.");
   const response = await fetch(request.origin + "/api/state", { signal: AbortSignal.timeout(10000) });
   if (!response.ok) throw new Error("Maker project lookup failed.");
-  const list: any = await response.json();
+  const list: any = await response.json().catch(() => {
+    throw new Error("Maker 本地项目服务返回了无效 JSON，尚未提交云端请求。请刷新画布后重试。");
+  });
   const project = (Array.isArray(list) ? list : list.projects || []).find((item: any) => item.key === request.project);
   if (!project?.valid || !project.path) throw new Error("Maker project unavailable.");
   const root = fs.realpathSync(project.path);
@@ -52,6 +55,40 @@ async function main(request: any) {
     }
   };
   const input = request.value || {};
+  if (request.operation === "detect-elements") {
+    if (!/^[a-f0-9-]{36}$/i.test(input.requestId || "")) throw new Error("Invalid element request ID.");
+    const image = identity(input.image.path);
+    if (image.width > 4096 || image.height > 4096)
+      throw new Error("官方切图支持每边不超过 4096 像素，请先缩小参考图；尚未提交识图。");
+    const directory = path.join(root, ".maker", "mw-workflows"); fs.mkdirSync(directory, { recursive: true });
+    const filename = path.join(directory, "cut-elements-" + input.requestId + ".json");
+    let attempt: any;
+    if (fs.existsSync(filename)) {
+      attempt = JSON.parse(fs.readFileSync(filename, "utf8"));
+      if (attempt.step.image.sha256 !== image.sha256) throw new Error("识别原图已变化，不能复用旧请求。");
+    } else {
+      const prompt = uiRecognitionPrompt(image.width, image.height).replace(
+        "已经去掉文字字形的游戏 UI 图", "可能包含文字的游戏原图") +
+        "\n本流程只裁切原图可见像素，不去字、不补绘、不补全遮挡。文字随所属按钮或面板保留在裁切图内；不要增加不可见内容。";
+      attempt = { ...serverRecognitionContext(root), step: {
+        key: input.requestId + ":cut", prompt, image
+      } };
+    }
+    const persist = () => {
+      const temporary = filename + ".tmp"; fs.writeFileSync(temporary, JSON.stringify(attempt)); fs.renameSync(temporary, filename);
+    };
+    let result = await serverRecognitionRequest(files, attempt, attempt.step, fetch, persist, true, false);
+    const deadline = Date.now() + 8 * 60 * 1000;
+    while (!result && attempt.step.status === "running" && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      result = await serverRecognitionRequest(files, attempt, attempt.step, fetch, persist, false, false);
+    }
+    if (!result) throw new Error(attempt.step.error?.message || "识图结果待确认；重试时沿用原请求，不重复提交。");
+    const size: any = result.image;
+    if (result.pass !== "cut" || size?.width !== image.width || size?.height !== image.height)
+      throw new Error("识图返回的坐标空间与原图不一致，未裁切。");
+    return { elements: validateCutElements(result.elements, image.width, image.height), image };
+  }
   if (request.operation === "refine" || request.operation === "name") {
     if (!/^[a-f0-9-]{36}$/i.test(input.requestId || "")) throw new Error("Invalid refinement request ID.");
     const image = identity(input.image.path);
@@ -85,11 +122,21 @@ async function main(request: any) {
       return { name: value.name.trim() };
     };
     if (attempt.result) return { status: "succeeded", ...validate(attempt.result) };
-    let output = await serverRecognitionRequest(files, attempt, attempt.step, fetch, persist, true, true);
+    const requestStep = async (allowPost: boolean, recover: boolean) => {
+      try {
+        return await serverRecognitionRequest(files, attempt, attempt.step, fetch, persist, allowPost, recover);
+      } catch (error) {
+        if (!(error instanceof SyntaxError)) throw error;
+        throw new Error(attempt.step.submittedAt
+          ? "Maker 云端返回了无效 JSON，结果未确认。请使用重试恢复原请求，不要新建批次。"
+          : "Maker 本地配置无法解析，尚未提交云端请求。");
+      }
+    };
+    let output = await requestStep(true, true);
     const deadline = Date.now() + 8 * 60 * 1000;
     while (!output && attempt.step.status === "running" && Date.now() < deadline) {
       await new Promise(resolve => setTimeout(resolve, 2000));
-      output = await serverRecognitionRequest(files, attempt, attempt.step, fetch, persist, false, false);
+      output = await requestStep(false, false);
     }
     if (!output) throw new Error(attempt.step.error?.message ||
       "微调理解尚未完成；保留请求记录，重试时查询同一请求。");
@@ -271,9 +318,15 @@ async function main(request: any) {
   throw new Error("Unknown workflow operation.");
 }
 async function entry() {
+  process.stdin.setEncoding("utf8");
   let input = "";
   for await (const chunk of process.stdin) input += chunk;
-  try { process.stdout.write(JSON.stringify({ ok: true, value: await main(JSON.parse(input)) })); }
+  try {
+    let request;
+    try { request = JSON.parse(input); }
+    catch { throw new Error("本地工作流请求的 JSON 无效，尚未提交云端请求。"); }
+    process.stdout.write(JSON.stringify({ ok: true, value: await main(request) }));
+  }
   catch (error: any) { process.stdout.write(JSON.stringify({ ok: false, error: error.message })); process.exitCode = 1; }
 }
 void entry();

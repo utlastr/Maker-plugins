@@ -11,6 +11,7 @@
     prelayout: stage("BBox 预排", "prelayout"),
     separate: stage("分离生图", "separate"),
     slice: stage("切图", "slice"),
+    elementCut: stage("元件裁切", "elementCut"),
     review: stage("素材确认", "review"),
     bundle: stage("UI 资源包", "bundle"),
     assemble: stage("组装 UI", "assemble"),
@@ -44,6 +45,27 @@
     const call = (operation, value) => native(operation, value);
     const output = (items, extra = {}) => items.map(image => ({ ...image, state: "succeeded", workflow: { ...context, ...image.workflow, ...extra } }));
     switch (node.kind) {
+      case "elementCut": {
+        const record = previous || { sources: {} }; record.sources ||= {};
+        const results = [];
+        for (const image of images) {
+          if (canceled()) break;
+          const item = record.sources[image.path] ||= { requestId: crypto.randomUUID() }; save(record);
+          if (!item.image) {
+            item.image = await rpc("pipeline-normalize", { image }); save(record);
+          }
+          if (!item.elements) {
+            const found = await call("detect-elements", { requestId: item.requestId, image: item.image });
+            item.elements = found.elements; save(record);
+          }
+          if (canceled()) break;
+          if (!item.output) {
+            item.output = await rpc("element-crop", { image: item.image, elements: item.elements }, 180000); save(record);
+          }
+          results.push(...item.output);
+        }
+        return results;
+      }
       case "bbox":
       case "uiBuild": {
         await call("health", {});
@@ -167,5 +189,5 @@
     }
     throw new Error("未知工作流步骤。");
   }
-  globalThis.MakerPipeline = { types, template, execute, basic: ["generate", "refine", "reference", "display", "tasks", "prefix", "cutout", "compress"], bbox: ["bbox", "slice", "uiBuild"] };
+  globalThis.MakerPipeline = { types, template, execute, basic: ["generate", "refine", "reference", "display", "tasks", "prefix", "cutout", "elementCut", "compress"], bbox: ["bbox", "slice", "uiBuild"] };
 })();

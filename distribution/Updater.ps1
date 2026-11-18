@@ -85,13 +85,15 @@ function Run-Update($request) {
     $info.RedirectStandardInput = $true
     $info.RedirectStandardOutput = $true
     $info.RedirectStandardError = $true
+    $info.StandardOutputEncoding = [Text.Encoding]::UTF8
     $process = New-Object Diagnostics.Process
     $process.StartInfo = $info
     [void]$process.Start()
-    $process.StandardInput.Write(($request.request | ConvertTo-Json -Compress -Depth 80))
-    $process.StandardInput.Close()
     $output = $process.StandardOutput.ReadToEndAsync()
     $errors = $process.StandardError.ReadToEndAsync()
+    $requestBytes = [Text.Encoding]::UTF8.GetBytes(($request.request | ConvertTo-Json -Compress -Depth 80))
+    $process.StandardInput.BaseStream.Write($requestBytes, 0, $requestBytes.Length)
+    $process.StandardInput.Close()
     if (!$process.WaitForExit(900000)) { $process.Kill(); throw "Workflow processing timed out." }
     if (!$output.Result) { throw "Workflow helper produced no result." }
     $result = $output.Result | ConvertFrom-Json
@@ -104,12 +106,17 @@ function Run-Update($request) {
   }
   $stage = Join-Path $root "stage"
   if ($request.action -eq "check") {
+    if ($request.supportsReload -and [version]$installedManifest.version -gt [version]$request.version) {
+      return @{ status = "reload_required"; version = $installedManifest.version }
+    }
     New-Item -ItemType Directory -Path $stage -Force | Out-Null
     $base = "https://github.com/$($config.repository)/releases/latest/download"
     Download "$base/update.json" (Join-Path $stage "update.json")
     Download "$base/update.sig" (Join-Path $stage "update.sig")
     $meta = Verify-Metadata $stage $config
-    if ([version]$meta.version -le [version]$request.version) { return @{ status = "current"; version = $request.version } }
+    if ([version]$meta.version -le [version]$request.version) {
+      return @{ status = "current"; version = $request.version; latestVersion = $meta.version }
+    }
     if ([version]$meta.version -lt [version]$installedManifest.version) { throw "Update would downgrade the installed extension." }
     if ($meta.asset -notmatch '^MakerWorkflow-[0-9.]+-Windows\.zip$') { throw "Invalid package filename." }
     $archive = Join-Path $stage "package.zip"

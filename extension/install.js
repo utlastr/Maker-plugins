@@ -1,3 +1,5 @@
+importScripts("tab-organizer.js");
+
 async function installIntoOpenPages(force = false) {
   const tabs = await chrome.tabs.query({ url: ["http://127.0.0.1/*", "http://localhost/*"] });
   await Promise.allSettled(tabs.map(async tab => {
@@ -53,8 +55,17 @@ async function installIntoOpenPages(force = false) {
   }));
 }
 chrome.runtime.onInstalled.addListener(installIntoOpenPages);
+chrome.runtime.onInstalled.addListener(async () => {
+  const tabs = await chrome.tabs.query({ url: ["http://127.0.0.1/*", "http://localhost/*"] });
+  await Promise.allSettled(tabs.filter(tab => new URL(tab.url).pathname === "/").map(tab =>
+    chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["project-title.js", "update-trigger.js"] })));
+});
 
-let checkingUpdate = false;
+let checkingUpdate;
+function checkUpdate() {
+  if (!checkingUpdate) checkingUpdate = performUpdate().finally(() => { checkingUpdate = null; });
+  return checkingUpdate;
+}
 async function updateStatus(value) {
   const status = { ...value, checkedAt: Date.now(), loadedVersion: chrome.runtime.getManifest().version };
   await chrome.storage.local.set({ "maker-update-status": status });
@@ -99,12 +110,10 @@ async function canvasesBusy() {
   }
   return false;
 }
-async function checkUpdate() {
+async function performUpdate() {
   if (!chrome.runtime.getManifest().key) {
     return updateStatus({ status: "development", message: "当前是源码目录版，不会自动覆盖源码。自动更新请加载安装器指定的 extension 目录。" });
   }
-  if (checkingUpdate) return;
-  checkingUpdate = true;
   try {
     await updateStatus({ status: "checking", message: "正在检查更新…" });
     let marker = await installationMarker().catch(() => null);
@@ -120,12 +129,20 @@ async function checkUpdate() {
     });
     const identity = { extensionId: chrome.runtime.id, installId: marker.installId };
     const result = await chrome.runtime.sendNativeMessage("cn.maker.workflow.updater", {
-      action: "check", version: chrome.runtime.getManifest().version, ...identity
+      action: "check", version: chrome.runtime.getManifest().version, supportsReload: true, ...identity
     });
     if (result.status === "error") return retryUpdate("error", result.message || "更新器出错，五分钟后重试。");
+    if (result.status === "reload_required") {
+      if (await canvasesBusy()) return retryUpdate("waiting", "本机插件文件已更新，等待画布保存和任务结束后加载。", result.version);
+      await updateStatus({ status: "installed", version: result.version, message: "本机文件已更新，正在加载新版本。" });
+      chrome.runtime.reload();
+      return;
+    }
     if (result.status === "current") {
       await chrome.alarms.clear("maker-update-retry");
-      return updateStatus({ status: "current", message: "已是最新版本。", version: result.version });
+      return updateStatus({ status: "current", message: result.latestVersion && result.latestVersion !== result.version ?
+        `本机版本 ${result.version}，GitHub 发布版本 ${result.latestVersion}。` : "已是最新版本。",
+        version: result.version, latestVersion: result.latestVersion || result.version });
     }
     if (result.status !== "ready") return retryUpdate("error", "更新器返回了无法确认的状态。");
     if (await canvasesBusy()) return retryUpdate("waiting", "新版已下载，等待当前任务结束和画布保存。", result.version);
@@ -142,7 +159,7 @@ async function checkUpdate() {
     return retryUpdate(missing ? "repair_required" : "offline", missing ?
       "本地更新器未连接。请解压最新版并运行一次 Install.cmd，随后加载固定安装目录。" :
       "更新检查失败：" + error.message + "；五分钟后自动重试。");
-  } finally { checkingUpdate = false; }
+  }
 }
 chrome.runtime.onStartup.addListener(checkUpdate);
 chrome.runtime.onInstalled.addListener(checkUpdate);
@@ -153,16 +170,30 @@ async function workflowRequest(request) {
     if (response.ok) bridge = await response.json();
   } catch {}
   if (!bridge) bridge = (await chrome.storage.local.get("maker-native-bridge"))["maker-native-bridge"];
+  let bridgeReady = false;
   if (bridge && /^http:\/\/127\.0\.0\.1:\d+$/.test(bridge.endpoint) && bridge.token) {
+    try {
+      const health = await fetch(bridge.endpoint + "/health", {
+        headers: { Authorization: "Bearer " + bridge.token }, signal: AbortSignal.timeout(2000)
+      });
+      bridgeReady = health.ok && (await health.json()).ready === true;
+    } catch {}
+  }
+  if (bridgeReady) {
+    // Never switch transports after a POST whose result may be unknown.
     const response = await fetch(bridge.endpoint + "/workflow", {
       method: "POST", headers: { Authorization: "Bearer " + bridge.token, "Content-Type": "application/json" },
       body: JSON.stringify(request)
+    }).catch(() => {
+      throw new Error("本地工作流连接中断，原请求结果未确认。请在卡片或历史中重试原请求，不要新建批次。");
     });
     const result = await response.json();
     if (!response.ok || result.error) throw new Error(result.error || "本地处理器执行失败。");
     return result;
   }
-  return chrome.runtime.sendNativeMessage("cn.maker.workflow.updater", { action: "workflow", request });
+  return chrome.runtime.sendNativeMessage("cn.maker.workflow.updater", { action: "workflow", request }).catch(() => {
+    throw new Error("本地工作流处理器未连接。请运行 Maker 插件安装器修复连接。");
+  });
 }
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
   if (message?.type === "maker-update-status") {
@@ -181,7 +212,7 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
   }
   if (message?.type !== "maker-check-update") return;
   void (async () => {
-    if (/^http:\/\/(?:127\.0\.0\.1|localhost):\d+\/canvas(?:\?|$)/.test(sender.url || "")) {
+    if (/^http:\/\/(?:127\.0\.0\.1|localhost):\d+\/(?:canvas(?:\?|$)|ui-editor\/|\?|$)/.test(sender.url || "")) {
       const values = await chrome.storage.local.get("maker-console-origins");
       await chrome.storage.local.set({ "maker-console-origins": [...new Set([
         ...(values["maker-console-origins"] || []), new URL(sender.url).origin
